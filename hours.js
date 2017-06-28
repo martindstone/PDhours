@@ -131,8 +131,11 @@ function buildReport(since, until) {
 		var headline = `Incidents belonging to ${teamName} occurring between ${sinceStr} and ${untilStr}`;
 		$('#result').html('<h3>' + headline + '</h3>');
 		$('#result').append($('<table/>', {
-			id: "result-table"
+			id: "result-table",
+			class: "display"
 		}));
+		$('#result-table').append('<thead><tr></tr></thead><tbody></tbody><tfoot><tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr></tfoot>');
+		
 		var tableData = [];
 		console.log(`got ${incidents.length} incidents`);
 		incidents.forEach(function(incident) {
@@ -149,28 +152,52 @@ function buildReport(since, until) {
 			tableData.push([
 				'<a href="' + incident.html_url + '" target="blank">' + incident.incident_number + '</a>',
 				created.format('l LTS [GMT]ZZ'),
-				createdTime.isBetween(workStart, workEnd) ? "" : "X",
+				createdTime.isBetween(workStart, workEnd) ? "no" : "yes",
 				resolved.format('l LTS [GMT]ZZ'),
 				( incident.last_status_change_by.type == 'user_reference' ) ? incident.last_status_change_by.summary : "auto-resolved",
 				duration,
-//				incident.status,
 				incident.service.summary,
 				incident.summary
 			]);
 		});
-		$('#result-table').DataTable({
-			data: tableData,
-			columns: [
+		var columnTitles = [
 				{ title: "#" },
 				{ title: "Created at" },
 				{ title: "Off-Hours" },
 				{ title: "Resolved at" },
-				{ title: "resolved by" },
+				{ title: "Resolved by" },
 				{ title: "Time to Resolve" },
-//				{ title: "Status" },
 				{ title: "Service Name" },
 				{ title: "Summary" }
-			]
+			];
+		$('#result-table').DataTable({
+			data: tableData,
+			columns: columnTitles,
+			dom: 'Bfrtip',
+			buttons: [
+				'copy', 'csv', 'excel', 'pdf', 'print'
+			],
+			initComplete: function () {
+	            this.api().columns([2,6]).every( function () {
+	                var column = this;
+	                var select = $('<label for="' + columnTitles[column.index()].title + '">' + columnTitles[column.index()].title + '</label><select id="' + columnTitles[column.index()].title + '"><option value=""></option></select>')
+	                    .appendTo( $(column.footer()).empty() )
+	                    .on( 'change', function () {
+	                        var val = $.fn.dataTable.util.escapeRegex(
+	                            $(this).val()
+	                        );
+	 
+	                        column
+	                            .search( val ? '^'+val+'$' : '', true, false )
+	                            .draw();
+	                    } );
+	 
+	                column.data().unique().sort().each( function ( d, j ) {
+		                console.log(`select option ${d}`);
+	                    select.append( '<option value="'+d+'">'+d+'</option>' )
+	                } );
+	            } );
+        	}
 		});
 
 		console.log("all done");
@@ -274,12 +301,15 @@ function main() {
 	
 	$('#tz-select').change(function() {
 		localStorage.setItem('timezone', $('#tz-select').val());
+		buildReport(since, until);
 	});
 	$('#work-start-select').change(function() {
 		localStorage.setItem('workstart', $('#work-start-select').val());
+		buildReport(since, until);
 	});
 	$('#work-end-select').change(function() {
 		localStorage.setItem('workend', $('#work-end-select').val());
+		buildReport(since, until);
 	});
 }
 
