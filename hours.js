@@ -56,9 +56,9 @@ function fetchTeams(callback, offset, teams) {
 		}
 	}
 	if ( offset ) {
-		options.data.offset = offset;
+		options['data'] = { offset: offset };
 	}
-	if ( ! teams ) {
+	if ( ! teams ) { 
 		teams = [];
 	}
 
