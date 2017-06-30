@@ -129,37 +129,53 @@ function buildReport(since, until) {
 		}
 
 		var headline = `Incidents belonging to ${teamName} occurring between ${sinceStr} and ${untilStr}`;
-		$('#result').html('<h3>' + headline + '</h3>');
-		$('#result').append($('<table/>', {
-			id: "result-table",
+		$('#details').html('<h3>' + headline + '</h3>');
+		$('#details').append($('<table/>', {
+			id: "details-table",
 			class: "display"
 		}));
-		$('#result-table').append('<thead><tr></tr></thead><tbody></tbody><tfoot><tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr></tfoot>');
+		$('#details-table').append('<thead><tr></tr></thead><tbody></tbody><tfoot><tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr></tfoot>');
 		
 		var tableData = [];
+		var resolvers = {};
 		console.log(`got ${incidents.length} incidents`);
 		incidents.forEach(function(incident) {
 			var created = moment.tz(incident.created_at, $('#tz-select').val());
 			var resolved = moment.tz(incident.last_status_change_at, $('#tz-select').val());
-			var duration = moment.duration(created.diff(resolved)).humanize();
+			var duration = moment.duration(created.diff(resolved));
 			var createdTime = moment().tz($('#tz-select').val()).hours(created.hours()).minutes(created.minutes());
-			
-			if ( createdTime.isBetween(workStart, workEnd) ) {
-				console.log(`${incident.incident_number}: ${createdTime} is between ${workStart} and ${workEnd}`);
-			} else {
-				console.log(`${incident.incident_number}: ${createdTime} is NOT between ${workStart} and ${workEnd}`);
+			var resolvedBy = ( incident.last_status_change_by.type == 'user_reference' ) ? incident.last_status_change_by.summary : "auto-resolved";
+
+			if ( ! resolvers[resolvedBy] ) {
+				resolvers[resolvedBy] = {
+					onHoursTime: 0,
+					offHoursTime: 0,
+					onHoursIncidents: 0,
+					offHoursIncidents: 0
+				}
 			}
+
+			if ( createdTime.isBetween(workStart, workEnd) ) {
+				resolvers[resolvedBy].onHoursTime += duration.seconds();
+				resolvers[resolvedBy].onHoursIncidents++;
+			} else {
+				resolvers[resolvedBy].offHoursTime += duration.seconds();
+				resolvers[resolvedBy].offHoursIncidents++;
+			}
+
 			tableData.push([
 				'<a href="' + incident.html_url + '" target="blank">' + incident.incident_number + '</a>',
 				created.format('l LTS [GMT]ZZ'),
 				createdTime.isBetween(workStart, workEnd) ? "no" : "yes",
 				resolved.format('l LTS [GMT]ZZ'),
-				( incident.last_status_change_by.type == 'user_reference' ) ? incident.last_status_change_by.summary : "auto-resolved",
-				duration,
+				resolvedBy,
+				duration.humanize(),
 				incident.service.summary,
 				incident.summary
 			]);
 		});
+
+		// build details table
 		var columnTitles = [
 				{ title: "#" },
 				{ title: "Created at" },
@@ -170,7 +186,7 @@ function buildReport(since, until) {
 				{ title: "Service Name" },
 				{ title: "Summary" }
 			];
-		$('#result-table').DataTable({
+		$('#details-table').DataTable({
 			data: tableData,
 			columns: columnTitles,
 			dom: 'Bfrtip',
@@ -178,7 +194,7 @@ function buildReport(since, until) {
 				'copy', 'csv', 'excel', 'pdf', 'print'
 			],
 			initComplete: function () {
-	            this.api().columns([2,6]).every( function () {
+	            this.api().columns([2,4,6]).every( function () {
 	                var column = this;
 	                var select = $('<label for="' + columnTitles[column.index()].title + '">' + columnTitles[column.index()].title + '</label><select id="' + columnTitles[column.index()].title + '"><option value=""></option></select>')
 	                    .appendTo( $(column.footer()).empty() )
@@ -199,6 +215,44 @@ function buildReport(since, until) {
 	            } );
         	}
 		});
+
+
+		// build report table
+		$('#report').html('<h3>' + headline + '</h3>');
+		$('#report').append($('<table/>', {
+			id: "report-table",
+			class: "display"
+		}));
+		var reportTableData = [];
+		Object.keys(resolvers).forEach(function(resolver) {
+			reportTableData.push([
+				resolver,
+				moment.duration(resolvers[resolver].onHoursTime, 'seconds').humanize(),
+				resolvers[resolver].onHoursIncidents,
+				moment.duration(resolvers[resolver].onHoursTime / resolvers[resolver].onHoursIncidents, 'seconds').humanize(),
+				moment.duration(resolvers[resolver].offHoursTime, 'seconds').humanize(),
+				resolvers[resolver].offHoursIncidents,
+				moment.duration(resolvers[resolver].onHoursTime / resolvers[resolver].onHoursIncidents, 'seconds').humanize(),
+			]);
+		});
+		var reportColumnTitles = [
+				{ title: "User" },
+				{ title: "On-Hours Time" },
+				{ title: "On-Hours Incidents" },
+				{ title: "On-Hours MTTR" },
+				{ title: "Off-Hours Time" },
+				{ title: "Off-Hours Incidents" },
+				{ title: "Off-Hours MTTR" },
+			];
+		$('#report-table').DataTable({
+			data: reportTableData,
+			columns: reportColumnTitles,
+			dom: 'Bfrtip',
+			buttons: [
+				'copy', 'csv', 'excel', 'pdf', 'print'
+			]
+		});
+
 
 		console.log("all done");
 		$('.busy').hide();
@@ -311,6 +365,25 @@ function main() {
 		localStorage.setItem('workend', $('#work-end-select').val());
 		buildReport(since, until);
 	});
+	$('#toggle-button').click(function() {
+		if ( $('#details-row').is(':visible') ) {
+			$('#details-row').hide();
+			$('#report-row').show();
+			$('#toggle-button').text('Show Details');
+		} else {
+			$('#report-row').hide();
+			$('#details-row').show();
+			$('#toggle-button').text('Show Summary');
+		}
+	});
+
+	$('#report-row').hide();
+	$('#report').html("<h3>oh hai</h3>");
 }
 
 $(document).ready(main);
+
+
+
+
+

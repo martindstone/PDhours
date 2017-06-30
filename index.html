@@ -16,12 +16,19 @@
 	<body>
 		<div class="container-fluid" style="padding-top: 20px;">									
 			<div id="controls" class="row">
-				<div class="col-md-12">
+				<div class="col-md-10">
 					Team: <select id="team-select"></select> Since: <input type="text" id="since"> Until: <input type="text" id="until"> Working hours from: <select id="work-start-select"></select> to: <select id="work-end-select"></select> in time zone: <select id="tz-select"></select>
 				</div>
+				<div class="col-md-2" align="right">
+					<button class="btn btn-primary" id="toggle-button">Show Summary</button>
+				</div>
 			</div>
-			<div class="row">
-				<div class="col-md-12" id="result">
+			<div class="row" id="details-row">
+				<div class="col-md-12" id="details">
+				</div>
+			</div>
+			<div class="row" id="report-row">
+				<div class="col-md-12" id="report">
 				</div>
 			</div>
 		</div>
