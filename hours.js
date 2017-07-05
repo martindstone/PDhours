@@ -1,4 +1,5 @@
 var incidents;
+var loadingStarted, loadingFinished;
 
 function getParameterByName(name) {
     name = name.replace(/[\[]/, "\\[").replace(/[\]]/, "\\]");
@@ -205,6 +206,7 @@ function unique(array) {
 
 function buildReport(since, until) {
 	$('.busy').show();
+	loadingStarted = moment();
 	async.series([
 		function(callback) {
 			fetchLogEntriesParallel(since, until, function(data) {
@@ -212,6 +214,9 @@ function buildReport(since, until) {
 				$('#progressbar').attr("style", "width: 0%;");
 				$('#progressbar').html("0%");
 				$('.busy').hide();
+				loadingFinished = moment();
+
+				console.log(`loaded ${data.length} log entries in ${loadingFinished.diff(loadingStarted, 'seconds')} seconds`);
 
 				incidents = {};
 				data.forEach(function(le) {
