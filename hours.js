@@ -208,6 +208,9 @@ function buildReport(since, until) {
 	async.series([
 		function(callback) {
 			fetchLogEntriesParallel(since, until, function(data) {
+				$('#progressbar').attr("aria-valuenow", "0");
+				$('#progressbar').attr("style", "width: 0%;");
+				$('#progressbar').html("0%");
 				$('.busy').hide();
 
 				incidents = {};
