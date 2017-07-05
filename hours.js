@@ -65,65 +65,6 @@ function fetchTeams(callback, offset, teams) {
 	PDRequest(getParameterByName('token'), "teams", "GET", options);
 }
 
-function fetchIncidents(since, until, callback, offset, incidents) {
-	var options = {
-		data: {
-			since: since.toISOString(),
-			until: until.toISOString(),
-			"statuses[]": "resolved"
-		},
-		success: function(data) {
-			Array.prototype.push.apply(incidents, data.incidents);
-			if ( data.more == true ) {
-				fetchIncidents(since, until, callback, data.offset + data.limit, incidents);
-			} else {
-				callback(incidents);
-			}
-		}
-	}
-	if ( offset ) {
-		options.data.offset = offset;
-	}
-
-	if ( $('#team-select').val() !== 'all' ) {
-		options.data['team_ids[]'] = $('#team-select').val();
-	}
-
-	if ( ! incidents ) {
-		incidents = [];
-	}
-
-	PDRequest(getParameterByName('token'), "incidents", "GET", options);
-}
-
-function fetchLogEntries(since, until, callback, offset, log_entries) {
-	var options = {
-		data: {
-			since: since.toISOString(),
-			until: until.toISOString(),
-			is_overview: true
-		},
-		success: function(data) {
-			Array.prototype.push.apply(log_entries, data.log_entries);
-			if ( data.more == true ) {
-				fetchLogEntries(since, until, callback, data.offset + data.limit, log_entries);
-			} else {
-				callback(log_entries);
-			}
-		}
-	}
-
-	if ( offset ) {
-		options.data.offset = offset;
-	}
-
-	if ( ! log_entries ) {
-		log_entries = [];
-	}
-
-	PDRequest(getParameterByName('token'), "log_entries", "GET", options);
-}
-
 function fetchLogEntriesParallel(since, until, callback) {
 	var limit = 100;
 	var infoFns = [];
