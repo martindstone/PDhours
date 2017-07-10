@@ -232,6 +232,16 @@ function buildReport(since, until) {
 
 			var resolvedStr = incident.resolve_log_entry[0].created_at;
 			var resolved = moment.tz(resolvedStr, $('#tz-select').val());
+			
+			var acknowledgedStr = "";
+			var acknowledged = null;
+			var time_to_first_ack = -1;
+			
+			if ( incident.acknowledge_log_entry ) {
+				acknowledgedStr = incident.acknowledge_log_entry[0].created_at;
+				acknowledged = moment.tz(acknowledgedStr, $('#tz-select').val());
+				time_to_first_ack = acknowledged.diff(created, 'seconds');
+			}
 
 			var duration = moment.duration(resolved.diff(created));
 			var durationSecs = resolved.diff(created, 'seconds');
@@ -285,6 +295,7 @@ function buildReport(since, until) {
 				assignedTo.join(', '),
 				resolved.format('l LTS [GMT]ZZ'),
 				resolvedBy,
+				time_to_first_ack >= 0 ? moment.duration(time_to_first_ack, 'seconds').humanize() : "not acknowledged",
 				duration.humanize(),
 				serviceName,
 				incidentSummary
@@ -299,6 +310,7 @@ function buildReport(since, until) {
 				{ title: "Assigned to" },
 				{ title: "Resolved at" },
 				{ title: "Resolved by" },
+				{ title: "Time to Acknowledge" },
 				{ title: "Time to Resolve" },
 				{ title: "Service Name" },
 				{ title: "Summary" }
