@@ -65,22 +65,24 @@ function fetchTeams(callback, offset, teams) {
 	PDRequest(getParameterByName('token'), "teams", "GET", options);
 }
 
-function fetchLogEntriesParallel(since, until, callback) {
+
+function fetch(endpoint, params, callback, progressCallback) {
 	var limit = 100;
 	var infoFns = [];
-	var log_entries = [];
+	var fetchedData = [];
 
-	var options = {
-		data: {
-			since: since.toISOString(),
-			until: until.toISOString(),
-			is_overview: false,
+	var commonParams = {
 			total: true,
 			limit: limit
-		},
+	};
+
+	var getParams = $.extend(true, {}, params, commonParams);
+
+	var options = {
+		data: getParams,
 		success: function(data) {
 			var total = data.total;
-			Array.prototype.push.apply(log_entries, data.log_entries);
+			Array.prototype.push.apply(fetchedData, data[endpoint]);
 
 			if ( data.more == true ) {
 				var indexes = [];
@@ -91,36 +93,46 @@ function fetchLogEntriesParallel(since, until, callback) {
 					var offset = i;
 					infoFns.push(function(callback) {
 						var options = {
-							data: {
-								since: since.toISOString(),
-								until: until.toISOString(),
-								is_overview: false,
-								total: true,
-								limit: limit,
-								offset: offset
-							},
+							data: $.extend(true, { offset: offset }, getParams),
 							success: function(data) {
-								Array.prototype.push.apply(log_entries, data.log_entries);
-								var progress = Math.round((log_entries.length / data.total) * 100);
-								$('#progressbar').attr("aria-valuenow", "" + progress);
-								$('#progressbar').attr("style", "width: " + progress + "%;");
-								$('#progressbar').html("" + progress + "%");
+								Array.prototype.push.apply(fetchedData, data[endpoint]);
+								if (progressCallback) {
+									progressCallback(data.total, fetchedData.length);
+								}
 								callback(null, data);
 							}
 						}
-						PDRequest(getParameterByName('token'), "log_entries", "GET", options);
+						PDRequest(getParameterByName('token'), endpoint, "GET", options);
 					});
 				});
 
 				async.parallel(infoFns, function(err, results) {
-					callback(log_entries);
+					callback(fetchedData);
 				});
 			} else {
-				callback(log_entries);
+				callback(fetchedData);
 			}
 		}
 	}
-	PDRequest(getParameterByName('token'), "log_entries", "GET", options);
+	PDRequest(getParameterByName('token'), endpoint, "GET", options);
+}
+
+function fetchLogEntries(since, until, callback, progressCallback) {
+	var params = {
+		since: since.toISOString(),
+		until: until.toISOString(),
+		is_overview: false
+	}
+	fetch('log_entries', params, callback, progressCallback);
+}
+
+function fetchIncidents(since, until, callback, progressCallback) {
+	var params = {
+		since: since.toISOString(),
+		until: until.toISOString(),
+		'statuses[]': 'resolved'
+	}
+	fetch('incidents', params, callback, progressCallback);
 }
 
 function compareCreatedAt(a, b) {
@@ -145,57 +157,100 @@ function unique(array) {
 	});
 }
 
-function buildReport(since, until) {
-	$('.busy').show();
-	loadingStarted = moment();
-	async.series([
+function fetchReportData(since, until, callback) {
+	var progress = {
+		incidents: {
+			total: 0,
+			done: 0
+		},
+		log_entries: {
+			total: 0,
+			done: 0
+		}
+	};
+
+	async.parallel([
 		function(callback) {
-			fetchLogEntriesParallel(since, until, function(data) {
-				$('#progressbar').attr("aria-valuenow", "0");
-				$('#progressbar').attr("style", "width: 0%;");
-				$('#progressbar').html("0%");
-				$('.busy').hide();
-				loadingFinished = moment();
-
-				console.log(`loaded ${data.length} log entries in ${loadingFinished.diff(loadingStarted, 'seconds')} seconds`);
-
-				incidents = {};
-				data.forEach(function(le) {
-					if ( ! incidents[le.incident.id] ) {
-						incidents[le.incident.id] = {}
-					}
-					if ( ! incidents[le.incident.id][le.type] ) {
-						incidents[le.incident.id][le.type] = [];
-					}
-
-					incidents[le.incident.id][le.type].push(le);
-				});
-
-				Object.keys(incidents).forEach(function(id) {
-					if ( ! incidents[id]['trigger_log_entry'] ) {
-						console.log(`incident ${id} has no trigger log entry. BALEETED.`);
-						delete incidents[id];
-					} else if ( ! incidents[id]['resolve_log_entry'] ) {
-						console.log(`incident ${id} has no resolve log entry. BALEETED.`);
-						delete incidents[id];
-					} else {
-						Object.keys(incidents[id]).forEach(function(leType) {
-							incidents[id][leType].sort(compareCreatedAt);
-						});
-
-						incidents[id].ttr = moment(incidents[id]['resolve_log_entry'][0].created_at).diff(moment(incidents[id]['trigger_log_entry'][0].created_at), 'seconds');
-
-						if ( incidents[id]['acknowledge_log_entry'] ) {
-							incidents[id].tta = moment(incidents[id]['acknowledge_log_entry'][0].created_at).diff(moment(incidents[id]['trigger_log_entry'][0].created_at), 'seconds');
-						}
-					}
-				});
-
-				callback(null, incidents);
+			fetchLogEntries(since, until, function(data) {
+				callback(null, data);
+			},
+			function(total, done) {
+				progress.log_entries.total = total;
+				progress.log_entries.done = done;
+				progress_percent = Math.round(( progress.incidents.done + progress.log_entries.done ) / ( progress.incidents.total + progress.log_entries.total ) * 100);
+				$('#progressbar').attr("aria-valuenow", "" + progress_percent);
+				$('#progressbar').attr("style", "width: " + progress_percent + "%;");
+				$('#progressbar').html("" + progress_percent + "%");
 			});
 		},
 		function(callback) {
-			callback(null, 'yay');
+			fetchIncidents(since, until, function(data) {
+				callback(null, data);
+			},
+			function(total, done) {
+				progress.incidents.total = total;
+				progress.incidents.done = done;
+				progress_percent = Math.round(( progress.incidents.done + progress.log_entries.done ) / ( progress.incidents.total + progress.log_entries.total ) * 100);
+				$('#progressbar').attr("aria-valuenow", "" + progress_percent);
+				$('#progressbar').attr("style", "width: " + progress_percent + "%;");
+				$('#progressbar').html("" + progress_percent + "%");
+			});
+		}
+	],
+	function(err, results) {
+		callback(results);
+	});
+}
+
+function parseReportData(log_entries, fetchedIncidents) {
+	$('#busy-message').html('<h1>Parsing incidents...</h1>');
+	var incidents = {};
+	fetchedIncidents.forEach(function (incident) {
+		incidents[incident.id] = incident;
+		incidents[incident.id].log_entries = {};
+	});
+
+	$('#busy-message').html('<h1>Adding log entries to incidents...</h1>');
+	log_entries.forEach(function(le) {
+		if ( incidents[le.incident.id] ) {
+			if ( ! incidents[le.incident.id]['log_entries'][le.type] ) {
+				incidents[le.incident.id]['log_entries'][le.type] = [];
+			}
+			incidents[le.incident.id]['log_entries'][le.type].push(le);
+		}
+	});
+
+	$('#busy-message').html('<h1>Sorting incident log entries...</h1>');
+	Object.keys(incidents).forEach(function(id) {
+		Object.keys(incidents[id]['log_entries']).forEach(function(leType) {
+			incidents[id]['log_entries'][leType].sort(compareCreatedAt);
+		});
+
+		incidents[id].ttr = moment(incidents[id].last_status_change_at).diff(moment(incidents[id].created_at), 'seconds');
+
+		if ( incidents[id]['log_entries']['acknowledge_log_entry'] ) {
+			incidents[id].tta = moment(incidents[id]['log_entries']['acknowledge_log_entry'][0].created_at).diff(moment(incidents[id].created_at), 'seconds');
+		}
+	});
+	
+	return incidents;
+}
+
+
+function buildReport(since, until, reuseFetchedData) {
+	$('.busy').show();
+	loadingStarted = moment();
+
+	async.series([
+		function(callback) {
+			if ( reuseFetchedData ) {
+				callback(null, 'yay');
+			} else {
+				fetchReportData(since, until, function(results) {
+					incidents = parseReportData(results[0], results[1]);
+					callback(null, 'yay');
+				});
+			}
 		}
 	],
 	function(err, results) {
@@ -226,11 +281,27 @@ function buildReport(since, until) {
 		var assignees = {};
 		Object.keys(incidents).forEach(function(incidentID) {
 			var incident = incidents[incidentID];
+			
+			if ( ! incident.log_entries.trigger_log_entry ) {
+// 				console.log(`Incident ${incident.id} doesn't have any trigger log entries. BALEETED.` );
+				delete incidents[incidentID];
+				return;
+			}
+			if ( ! incident.log_entries.resolve_log_entry ) {
+// 				console.log(`Incident ${incident.id} doesn't have any resolve log entries. BALEETED.` );
+				delete incidents[incidentID];
+				return;
+			}
+			if ( teamID != 'all' && ( ! incident.teams || incident.teams.map(function(team){return team.id}).indexOf(teamID) == -1 ) ) {
+				var team_names = incident.teams ? incident.teams.map(function(team){return team.id}).join(', ') : '(no teams)';
+// 				console.log(`Incident ${incident.id} teams ${team_names} doesn't include ${teamID}. Skipped.` );
+				return;
+			}
 
-			var createdStr = incident.trigger_log_entry[0].created_at;
+			var createdStr = incident.log_entries.trigger_log_entry[0].created_at;
 			var created = moment.tz(createdStr, $('#tz-select').val());
 
-			var resolvedStr = incident.resolve_log_entry[0].created_at;
+			var resolvedStr = incident.log_entries.resolve_log_entry[0].created_at;
 			var resolved = moment.tz(resolvedStr, $('#tz-select').val());
 			
 			var acknowledgedStr = "";
@@ -238,7 +309,7 @@ function buildReport(since, until) {
 			var time_to_first_ack = -1;
 			
 			if ( incident.acknowledge_log_entry ) {
-				acknowledgedStr = incident.acknowledge_log_entry[0].created_at;
+				acknowledgedStr = incident.log_entries.acknowledge_log_entry[0].created_at;
 				acknowledged = moment.tz(acknowledgedStr, $('#tz-select').val());
 				time_to_first_ack = acknowledged.diff(created, 'seconds');
 			}
@@ -247,12 +318,12 @@ function buildReport(since, until) {
 			var durationSecs = resolved.diff(created, 'seconds');
 
 			var createdTime = moment().tz($('#tz-select').val()).hours(created.hours()).minutes(created.minutes());
-			var resolvedBy = ( incident.resolve_log_entry[0].agent.type == 'user_reference' ) ? incident.resolve_log_entry[0].agent.summary : "auto-resolved";
+			var resolvedBy = ( incident.log_entries.resolve_log_entry[0].agent.type == 'user_reference' ) ? incident.log_entries.resolve_log_entry[0].agent.summary : "auto-resolved";
 
 			var assignedTo = [];
 
-			if ( incident.assign_log_entry ) {
-				incident.assign_log_entry.forEach(function(le) {
+			if ( incident.log_entries.assign_log_entry ) {
+				incident.log_entries.assign_log_entry.forEach(function(le) {
 					le.assignees.forEach(function(assignee) {
 						if ( assignee.type == 'user_reference' ) {
 							assignedTo.push(assignee.summary);
@@ -283,10 +354,10 @@ function buildReport(since, until) {
 			}
 			var durationStr = duration.humanize();
 
-			var serviceName = incident.trigger_log_entry[0].service.summary;
-			var incidentSummary = incident.trigger_log_entry[0].incident.summary;
+			var serviceName = incident.log_entries.trigger_log_entry[0].service.summary;
+			var incidentSummary = incident.log_entries.trigger_log_entry[0].incident.summary;
 			var incidentNumber = incidentSummary.match(/\[#([\d]+)\]/)[1];
-			var incidentURL = incident.trigger_log_entry[0].incident.html_url;
+			var incidentURL = incident.log_entries.trigger_log_entry[0].incident.html_url;
 
 			tableData.push([
 				'<a href="' + incidentURL + '" target="blank">' + incidentNumber + '</a>',
@@ -325,7 +396,8 @@ function buildReport(since, until) {
 			initComplete: function () {
 	            this.api().columns([2,3,5,7]).every( function () {
 	                var column = this;
-	                var select = $('<label for="' + columnTitles[column.index()].title + '">' + columnTitles[column.index()].title + '</label><select id="' + columnTitles[column.index()].title + '"><option value=""></option></select>')
+	                var columnTitle = columnTitles[column.index()].title;
+	                var select = $('<select id="' + columnTitle + '"><option value="">' + columnTitle + ': (all)</option></select>')
 	                    .appendTo( $(column.footer()).empty() )
 	                    .on( 'change', function () {
 	                        var val = $.fn.dataTable.util.escapeRegex(
@@ -485,20 +557,20 @@ function main() {
 	});
 
 	$('#team-select').change(function() {
-		buildReport(since, until);
+		buildReport(since, until, true);
 	});
 
 	$('#tz-select').change(function() {
 		localStorage.setItem('timezone', $('#tz-select').val());
-		buildReport(since, until);
+		buildReport(since, until, true);
 	});
 	$('#work-start-select').change(function() {
 		localStorage.setItem('workstart', $('#work-start-select').val());
-		buildReport(since, until);
+		buildReport(since, until, true);
 	});
 	$('#work-end-select').change(function() {
 		localStorage.setItem('workend', $('#work-end-select').val());
-		buildReport(since, until);
+		buildReport(since, until, true);
 	});
 	$('#toggle-button').click(function() {
 		if ( $('#details-row').is(':visible') ) {
