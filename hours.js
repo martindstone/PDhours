@@ -226,9 +226,10 @@ function parseReportData(log_entries, fetchedIncidents) {
 			incidents[id]['log_entries'][leType].sort(compareCreatedAt);
 		});
 
-		incidents[id].ttr = moment(incidents[id].last_status_change_at).diff(moment(incidents[id].created_at), 'seconds');
+		incidents[id].ttr = moment(incidents[id]['log_entries']['resolve_log_entry'][0].created_at).diff(moment(incidents[id].created_at), 'seconds');
 
 		if ( incidents[id]['log_entries']['acknowledge_log_entry'] ) {
+			console.log("Acknowledged at " + moment(incidents[id]['log_entries']['acknowledge_log_entry'][0].created_at).format('llll') + ", triggered at " + moment(incidents[id].created_at).format('llll') + ", diff " + moment(incidents[id]['log_entries']['acknowledge_log_entry'][0].created_at).diff(moment(incidents[id].created_at), 'seconds') );
 			incidents[id].tta = moment(incidents[id]['log_entries']['acknowledge_log_entry'][0].created_at).diff(moment(incidents[id].created_at), 'seconds');
 		}
 	});
@@ -283,41 +284,33 @@ function buildReport(since, until, reuseFetchedData) {
 			var incident = incidents[incidentID];
 			
 			if ( ! incident.log_entries.trigger_log_entry ) {
-// 				console.log(`Incident ${incident.id} doesn't have any trigger log entries. BALEETED.` );
 				delete incidents[incidentID];
 				return;
 			}
 			if ( ! incident.log_entries.resolve_log_entry ) {
-// 				console.log(`Incident ${incident.id} doesn't have any resolve log entries. BALEETED.` );
 				delete incidents[incidentID];
 				return;
 			}
 			if ( teamID != 'all' && ( ! incident.teams || incident.teams.map(function(team){return team.id}).indexOf(teamID) == -1 ) ) {
 				var team_names = incident.teams ? incident.teams.map(function(team){return team.id}).join(', ') : '(no teams)';
-// 				console.log(`Incident ${incident.id} teams ${team_names} doesn't include ${teamID}. Skipped.` );
 				return;
 			}
 
 			var createdStr = incident.log_entries.trigger_log_entry[0].created_at;
 			var created = moment.tz(createdStr, $('#tz-select').val());
+			var createdTime = moment().tz($('#tz-select').val()).hours(created.hours()).minutes(created.minutes());
 
 			var resolvedStr = incident.log_entries.resolve_log_entry[0].created_at;
 			var resolved = moment.tz(resolvedStr, $('#tz-select').val());
-			
+	
 			var acknowledgedStr = "";
 			var acknowledged = null;
-			var time_to_first_ack = -1;
 			
 			if ( incident.acknowledge_log_entry ) {
 				acknowledgedStr = incident.log_entries.acknowledge_log_entry[0].created_at;
 				acknowledged = moment.tz(acknowledgedStr, $('#tz-select').val());
-				time_to_first_ack = acknowledged.diff(created, 'seconds');
 			}
 
-			var duration = moment.duration(resolved.diff(created));
-			var durationSecs = resolved.diff(created, 'seconds');
-
-			var createdTime = moment().tz($('#tz-select').val()).hours(created.hours()).minutes(created.minutes());
 			var resolvedBy = ( incident.log_entries.resolve_log_entry[0].agent.type == 'user_reference' ) ? incident.log_entries.resolve_log_entry[0].agent.summary : "auto-resolved";
 
 			var assignedTo = [];
@@ -337,22 +330,25 @@ function buildReport(since, until, reuseFetchedData) {
 						assignees[assignee] = {
 							onHoursTime: 0,
 							offHoursTime: 0,
+							onHoursTTA: 0,
+							offHoursTTA: 0,
 							onHoursIncidents: 0,
 							offHoursIncidents: 0
 						}
 					}
 					if ( createdTime.isBetween(workStart, workEnd) ) {
-						assignees[assignee].onHoursTime += durationSecs;
+						assignees[assignee].onHoursTime += incident.ttr;
+						assignees[assignee].onHoursTTA += incident.tta;
 						assignees[assignee].onHoursIncidents++;
 					} else {
-						assignees[assignee].offHoursTime += durationSecs;
+						assignees[assignee].offHoursTime += incident.ttr;
+						assignees[assignee].offHoursTTA += incident.tta;
 						assignees[assignee].offHoursIncidents++;
 					}
 				});
 			} else {
 				assignedTo = ['no one'];
 			}
-			var durationStr = duration.humanize();
 
 			var serviceName = incident.log_entries.trigger_log_entry[0].service.summary;
 			var incidentSummary = incident.log_entries.trigger_log_entry[0].incident.summary;
@@ -366,8 +362,8 @@ function buildReport(since, until, reuseFetchedData) {
 				assignedTo.join(', '),
 				resolved.format('l LTS [GMT]ZZ'),
 				resolvedBy,
-				time_to_first_ack >= 0 ? moment.duration(time_to_first_ack, 'seconds').humanize() : "not acknowledged",
-				duration.humanize(),
+				incident.tta >= 0 ? moment.duration(incident.tta, 'seconds').humanize() : "not acknowledged",
+				incident.ttr >= 0 ? moment.duration(incident.ttr, 'seconds').humanize() : "not resolved",
 				serviceName,
 				incidentSummary
 			]);
@@ -435,14 +431,28 @@ function buildReport(since, until, reuseFetchedData) {
 				offHoursMTTR = moment.duration(assignees[assignee].offHoursTime / assignees[assignee].offHoursIncidents, 'seconds').humanize()
 			}
 
+
+			var onHoursMTTA = 'n/a';
+			if ( assignees[assignee].onHoursIncidents && assignees[assignee].onHoursTTA ) {
+				onHoursMTTA = moment.duration(assignees[assignee].onHoursTTA / assignees[assignee].onHoursIncidents, 'seconds').humanize()
+			}
+
+			var offHoursMTTA = 'n/a';
+			if ( assignees[assignee].offHoursIncidents && assignees[assignee].offHoursTTA ) {
+				offHoursMTTA = moment.duration(assignees[assignee].offHoursTTA / assignees[assignee].offHoursIncidents, 'seconds').humanize()
+			}
+
+
 			reportTableData.push([
 				assignee,
 				secondsToHHMMSS(assignees[assignee].onHoursTime),
 				assignees[assignee].onHoursIncidents,
 				onHoursMTTR,
+				onHoursMTTA,
 				secondsToHHMMSS(assignees[assignee].offHoursTime),
 				assignees[assignee].offHoursIncidents,
 				offHoursMTTR,
+				offHoursMTTA
 			]);
 		});
 		var reportColumnTitles = [
@@ -450,9 +460,11 @@ function buildReport(since, until, reuseFetchedData) {
 				{ title: "On-Hours Time (HH:MM:SS)" },
 				{ title: "On-Hours Incidents" },
 				{ title: "On-Hours MTTR" },
+				{ title: "On-Hours MTTA" },
 				{ title: "Off-Hours Time (HH:MM:SS)" },
 				{ title: "Off-Hours Incidents" },
 				{ title: "Off-Hours MTTR" },
+				{ title: "Off-Hours MTTA" }
 			];
 		$('#report-table').DataTable({
 			data: reportTableData,
