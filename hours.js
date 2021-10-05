@@ -276,7 +276,7 @@ function buildReport(since, until, reuseFetchedData) {
 			id: "details-table",
 			class: "display"
 		}));
-		$('#details-table').append('<thead><tr></tr></thead><tbody></tbody><tfoot><tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr></tfoot>');
+		$('#details-table').append('<thead><tr></tr></thead><tbody></tbody><tfoot><tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr></tfoot>');
 
 		var tableData = [];
 		var assignees = {};
@@ -357,6 +357,7 @@ function buildReport(since, until, reuseFetchedData) {
 
 			tableData.push([
 				'<a href="' + incidentURL + '" target="blank">' + incidentNumber + '</a>',
+				incident.alert_counts.all,
 				created.format('l LTS [GMT]ZZ'),
 				createdTime.isBetween(workStart, workEnd) ? "no" : "yes",
 				assignedTo.join(', '),
@@ -372,6 +373,7 @@ function buildReport(since, until, reuseFetchedData) {
 		// build details table
 		var columnTitles = [
 				{ title: "#" },
+				{ title: "# Alerts" },
 				{ title: "Created at" },
 				{ title: "Off-Hours" },
 				{ title: "Assigned to" },
@@ -390,26 +392,27 @@ function buildReport(since, until, reuseFetchedData) {
 				'copy', 'csv', 'excel', 'pdf', 'print'
 			],
 			initComplete: function () {
-	            this.api().columns([2,3,5,7]).every( function () {
-	                var column = this;
-	                var columnTitle = columnTitles[column.index()].title;
-	                var select = $('<select id="' + columnTitle + '"><option value="">' + columnTitle + ': (all)</option></select>')
-	                    .appendTo( $(column.footer()).empty() )
-	                    .on( 'change', function () {
-	                        var val = $.fn.dataTable.util.escapeRegex(
-	                            $(this).val()
-	                        );
+				this.api().columns([3,4,6,7,8,9]).every( function () {
+						var column = this;
+						var columnTitle = columnTitles[column.index()].title;
+						console.log(column, columnTitle)
+						var select = $('<select id="' + columnTitle + '"><option value="">' + columnTitle + ': (all)</option></select>')
+								.appendTo( $(column.footer()) )
+								.on( 'change', function () {
+										var val = $.fn.dataTable.util.escapeRegex(
+												$(this).val()
+										);
 
-	                        column
-	                            .search( val ? '^'+val+'$' : '', true, false )
-	                            .draw();
-	                    } );
+										column
+												.search( val ? '^'+val+'$' : '', true, false )
+												.draw();
+								} );
 
-	                column.data().unique().sort().each( function ( d, j ) {
-	                    select.append( '<option value="'+d+'">'+d+'</option>' )
-	                } );
-	            } );
-        	}
+						column.data().unique().sort().each( function ( d, j ) {
+								select.append( '<option value="'+d+'">'+d+'</option>' )
+						} );
+				} );
+			}
 		});
 
 		// build report table
