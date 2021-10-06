@@ -1,138 +1,102 @@
 var incidents;
-var loadingStarted, loadingFinished;
 
 function getParameterByName(name) {
-    name = name.replace(/[\[]/, "\\[").replace(/[\]]/, "\\]");
-    var regex = new RegExp("[\\?&]" + name + "=([^&#]*)"),
-        results = regex.exec(location.search);
-    return results === null ? null : decodeURIComponent(results[1].replace(/\+/g, " "));
+	const params = new URLSearchParams(document.location.search.substring(1))
+	const r = params.get(name)
+	if (r && name === 'token') {
+		return r.replace(' ', '+')
+	}
+	return r
 }
 
-function PDRequest(token, endpoint, method, options) {
+function endpointIdentifier(endpoint) {
+	if (endpoint.match(/users\/P.*\/sessions/)) {
+		return 'user_sessions'
+	}
+	return endpoint.split('/').pop()
+}
 
-	if ( !token ) {
-		alert("Please put a token in the URL, like .../index.html?token=<YOUR_V2_API_TOKEN>");
-		return;
+async function PDRequest(token, endpoint, method, params, data) {
+	let url = `https://api.pagerduty.com/${endpoint}`
+	if (params) {
+		url += '?' + new URLSearchParams(params)
+	}
+	let body = null
+	if (data) {
+		body = JSON.stringify(data)
 	}
 
-	var merged = $.extend(true, {}, {
-		type: method,
-		dataType: "json",
-		url: "https://api.pagerduty.com/" + endpoint,
+	const response = await fetch(url, {
+		method,
 		headers: {
-			"Authorization": "Token token=" + token,
+			"Authorization": `Token token=${token}`,
 			"Accept": "application/vnd.pagerduty+json;version=2"
 		},
-		error: function(err, textStatus) {
-			$('.busy').hide();
-			var alertStr = "Error '" + err.status + " - " + err.statusText + "' while attempting " + method + " request to '" + endpoint + "'";
-			try {
-				alertStr += ": " + err.responseJSON.error.message;
-			} catch (e) {
-				alertStr += ".";
-			}
-
-			try {
-				alertStr += "\n\n" + err.responseJSON.error.errors.join("\n");
-			} catch (e) {}
-
-			alert(alertStr);
-		}
-	},
-	options);
-
-	$.ajax(merged);
+		body
+	})
+	if (!response.ok) {
+		console.log(response)
+	}
+	const responseData = await response.json()
+	return responseData
 }
 
-function fetchTeams(callback, offset, teams) {
-	var options = {
-		success: function(data) {
-			Array.prototype.push.apply(teams, data.teams);
-			if ( data.more == true ) {
-				fetchTeams(callback, data.offset + data.limit, teams);
-			} else {
-				callback(teams);
-			}
-		}
+async function PDFetch(token, endpoint, params, progressCallback) {
+	let requestParams = {
+		limit: 100,
+		total: true,
+		offset: 0
 	}
-	if ( offset ) {
-		options['data'] = { offset: offset };
-	}
-	if ( ! teams ) {
-		teams = [];
+	if (params) {
+		requestParams = {...requestParams, ...params}
 	}
 
-	PDRequest(getParameterByName('token'), "teams", "GET", options);
-}
 
+	let reversedSortOrder = false
+	if (endpoint.indexOf('log_entries') > -1) {
+		reversedSortOrder = true
+	}
 
-function fetch(endpoint, params, callback, progressCallback) {
-	var limit = 100;
-	var infoFns = [];
-	var fetchedData = [];
+	const firstPage = await PDRequest(token, endpoint, 'GET', requestParams)
+	console.log(`total is ${firstPage.total}`)
+	let fetchedData = [...firstPage[endpointIdentifier(endpoint)]]
+	requestParams.offset += requestParams.limit
 
-	var commonParams = {
-			total: true,
-			limit: limit
-	};
-
-	var getParams = $.extend(true, {}, params, commonParams);
-
-	var options = {
-		data: getParams,
-		success: function(data) {
-			var total = data.total;
-			Array.prototype.push.apply(fetchedData, data[endpoint]);
-
-			if ( data.more == true ) {
-				var indexes = [];
-				for ( i = limit; i < total; i += limit ) {
-					indexes.push(Number(i));
-				}
-				indexes.forEach(function(i) {
-					var offset = i;
-					infoFns.push(function(callback) {
-						var options = {
-							data: $.extend(true, { offset: offset }, getParams),
-							success: function(data) {
-								Array.prototype.push.apply(fetchedData, data[endpoint]);
-								if (progressCallback) {
-									progressCallback(data.total, fetchedData.length);
-								}
-								callback(null, data);
-							}
-						}
-						PDRequest(getParameterByName('token'), endpoint, "GET", options);
-					});
-				});
-
-				async.parallel(infoFns, function(err, results) {
-					callback(fetchedData);
-				});
-			} else {
-				callback(fetchedData);
+	let promises = []
+	let outerOffset = 0
+	while (outerOffset + requestParams.offset < firstPage.total) {
+		while ((outerOffset + requestParams.offset < firstPage.total) && (requestParams.offset < 10000)) {
+			const promise = PDRequest(token, endpoint, 'GET', requestParams)
+				.then(page => {
+					fetchedData = [...fetchedData, ...page[endpointIdentifier(endpoint)]]
+					if (progressCallback) {
+						progressCallback(firstPage.total, fetchedData.length)
+					}
+				})
+				.catch(error => {
+					console.log(error)
+				})
+			promises.push(promise)
+			requestParams.offset += requestParams.limit
+			if (promises.length > 10) {
+				await Promise.all(promises)
+				promises = []
 			}
 		}
+		await Promise.all(promises)
+		fetchedData.sort((a, b) => {
+			return reversedSortOrder ? compareCreatedAt(b, a) : compareCreatedAt(a, b)
+		})
+		requestParams[reversedSortOrder ? 'until' : 'since'] = fetchedData[fetchedData.length - 1].created_at
+		console.log(`hit 10000 request limit, setting outer offset to ${fetchedData.length} and setting ${reversedSortOrder ? 'until' : 'since'} to ${fetchedData[fetchedData.length - 1].created_at}`)
+		outerOffset = fetchedData.length
+		requestParams.offset = 0
 	}
-	PDRequest(getParameterByName('token'), endpoint, "GET", options);
-}
-
-function fetchLogEntries(since, until, callback, progressCallback) {
-	var params = {
-		since: since.toISOString(),
-		until: until.toISOString(),
-		is_overview: false
-	}
-	fetch('log_entries', params, callback, progressCallback);
-}
-
-function fetchIncidents(since, until, callback, progressCallback) {
-	var params = {
-		since: since.toISOString(),
-		until: until.toISOString(),
-		'statuses[]': 'resolved'
-	}
-	fetch('incidents', params, callback, progressCallback);
+	console.log(`got ${fetchedData.length} ${endpointIdentifier(endpoint)}`)
+	fetchedData.sort((a, b) => {
+		return reversedSortOrder ? compareCreatedAt(b, a) : compareCreatedAt(a, b)
+	})
+	return fetchedData
 }
 
 function compareCreatedAt(a, b) {
@@ -157,8 +121,16 @@ function unique(array) {
 	});
 }
 
-function fetchReportData(since, until, callback) {
-	var progress = {
+function setProgressBarPercent(total, done) {
+	progress_percent = Math.round(done / total * 100);
+	$('#progressbar').attr("aria-valuenow", "" + progress_percent);
+	$('#progressbar').attr("style", "width: " + progress_percent + "%;");
+	$('#progressbar').html("" + progress_percent + "%");
+}
+
+async function fetchReportData(since, until, callback) {
+	
+	const progress = {
 		incidents: {
 			total: 0,
 			done: 0
@@ -169,320 +141,302 @@ function fetchReportData(since, until, callback) {
 		}
 	};
 
-	async.parallel([
-		function(callback) {
-			fetchLogEntries(since, until, function(data) {
-				callback(null, data);
-			},
-			function(total, done) {
-				progress.log_entries.total = total;
-				progress.log_entries.done = done;
-				progress_percent = Math.round(( progress.incidents.done + progress.log_entries.done ) / ( progress.incidents.total + progress.log_entries.total ) * 100);
-				$('#progressbar').attr("aria-valuenow", "" + progress_percent);
-				$('#progressbar').attr("style", "width: " + progress_percent + "%;");
-				$('#progressbar').html("" + progress_percent + "%");
-			});
-		},
-		function(callback) {
-			fetchIncidents(since, until, function(data) {
-				callback(null, data);
-			},
-			function(total, done) {
-				progress.incidents.total = total;
-				progress.incidents.done = done;
-				progress_percent = Math.round(( progress.incidents.done + progress.log_entries.done ) / ( progress.incidents.total + progress.log_entries.total ) * 100);
-				$('#progressbar').attr("aria-valuenow", "" + progress_percent);
-				$('#progressbar').attr("style", "width: " + progress_percent + "%;");
-				$('#progressbar').html("" + progress_percent + "%");
-			});
-		}
-	],
-	function(err, results) {
-		callback(results);
-	});
+	let params = {
+		since: since.toISOString(),
+		until: until.toISOString()
+	}
+
+	$('#busy-message').html('<h1>Fetching log entries...</h1>')
+	const log_entries = await PDFetch(getParameterByName('token'), 'log_entries', params, setProgressBarPercent)
+
+	params = {
+		...params,
+		'statuses[]': 'resolved'
+	}
+	$('#busy-message').html('<h1>Fetching incidents...</h1>')
+	setProgressBarPercent(1, 0)
+	const fetchedIncidents = await PDFetch(getParameterByName('token'), 'incidents', params, setProgressBarPercent)
+
+	return {
+		log_entries,
+		fetchedIncidents
+	}
 }
 
 function parseReportData(log_entries, fetchedIncidents) {
 	$('#busy-message').html('<h1>Parsing incidents...</h1>');
 	var incidents = {};
-	fetchedIncidents.forEach(function (incident) {
-		incidents[incident.id] = incident;
-		incidents[incident.id].log_entries = {};
-	});
+
+	for (const incident of fetchedIncidents) {
+		incidents[incident.id] = incident
+		incidents[incident.id].log_entries = {}
+	}
 
 	$('#busy-message').html('<h1>Adding log entries to incidents...</h1>');
-	log_entries.forEach(function(le) {
+	for (const le of log_entries) {
 		if ( incidents[le.incident.id] ) {
 			if ( ! incidents[le.incident.id]['log_entries'][le.type] ) {
 				incidents[le.incident.id]['log_entries'][le.type] = [];
 			}
 			incidents[le.incident.id]['log_entries'][le.type].push(le);
 		}
-	});
+	}
 
 	$('#busy-message').html('<h1>Sorting incident log entries...</h1>');
-	Object.keys(incidents).forEach(function(id) {
-		Object.keys(incidents[id]['log_entries']).forEach(function(leType) {
+	for (const id of Object.keys(incidents)) {
+		for (const leType of Object.keys(incidents[id]['log_entries'])) {
 			incidents[id]['log_entries'][leType].sort(compareCreatedAt);
-		});
+		}
 
-		incidents[id].ttr = moment(incidents[id]['log_entries']['resolve_log_entry'][0].created_at).diff(moment(incidents[id].created_at), 'seconds');
+		const create_time = moment(incidents[id].created_at)
+		const resolve_time = moment(incidents[id]['log_entries']['resolve_log_entry'][0].created_at)
+		incidents[id].ttr = resolve_time.diff(create_time, 'seconds');
 
 		if ( incidents[id]['log_entries']['acknowledge_log_entry'] ) {
-			console.log("Acknowledged at " + moment(incidents[id]['log_entries']['acknowledge_log_entry'][0].created_at).format('llll') + ", triggered at " + moment(incidents[id].created_at).format('llll') + ", diff " + moment(incidents[id]['log_entries']['acknowledge_log_entry'][0].created_at).diff(moment(incidents[id].created_at), 'seconds') );
-			incidents[id].tta = moment(incidents[id]['log_entries']['acknowledge_log_entry'][0].created_at).diff(moment(incidents[id].created_at), 'seconds');
+			const ack_time = moment(incidents[id]['log_entries']['acknowledge_log_entry'][0].created_at)
+			incidents[id].tta = ack_time.diff(create_time, 'seconds');
 		}
-	});
+	}
 	
 	return incidents;
 }
 
 
-function buildReport(since, until, reuseFetchedData) {
+async function buildReport(since, until, reuseFetchedData) {
 	$('.busy').show();
-	loadingStarted = moment();
 
-	async.series([
-		function(callback) {
-			if ( reuseFetchedData ) {
-				callback(null, 'yay');
-			} else {
-				fetchReportData(since, until, function(results) {
-					incidents = parseReportData(results[0], results[1]);
-					callback(null, 'yay');
-				});
-			}
+	if (!reuseFetchedData) {
+		const {log_entries, fetchedIncidents} = await fetchReportData(since, until)
+
+		incidents = parseReportData(log_entries, fetchedIncidents)
+	}
+
+	var teamName = $('#team-select option:selected').text();
+	var teamID = $('#team-select option:selected').val();
+	var sinceStr = moment(since).format("LLLL");
+	var untilStr = moment(until).format("LLLL");
+
+	var workStartHHmm = $('#work-start-select').val().split(':');
+	var workStart = moment().tz($('#tz-select').val()).hours(workStartHHmm[0]).minutes(workStartHHmm[1]);
+
+	var workEndHHmm = $('#work-end-select').val().split(':');
+	var workEnd = moment().tz($('#tz-select').val()).hours(workEndHHmm[0]).minutes(workEndHHmm[1]);
+
+	if( workEnd.isBefore(workStart) ) {
+		workEnd.add(1, 'days');
+	}
+
+	var headline = `Incidents belonging to ${teamName} occurring between ${sinceStr} and ${untilStr}`;
+	$('#details').html('<h3>' + headline + '</h3>');
+	$('#details').append($('<table/>', {
+		id: "details-table",
+		class: "display"
+	}));
+	$('#details-table').append('<thead><tr></tr></thead><tbody></tbody><tfoot><tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr></tfoot>');
+
+	var tableData = [];
+	var assignees = {};
+	for (const [incidentID, incident] of Object.entries(incidents)) {
+		if ( ! incident.log_entries.trigger_log_entry ) {
+			delete incidents[incidentID];
+			return;
 		}
-	],
-	function(err, results) {
-		var teamName = $('#team-select option:selected').text();
-		var teamID = $('#team-select option:selected').val();
-		var sinceStr = moment(since).format("LLLL");
-		var untilStr = moment(until).format("LLLL");
+		if ( ! incident.log_entries.resolve_log_entry ) {
+			delete incidents[incidentID];
+			return;
+		}
+		// if ( teamID != 'all' && ( ! incident.teams || incident.teams.map(function(team){return team.id}).indexOf(teamID) == -1 ) ) {
+		// 	var team_names = incident.teams ? incident.teams.map(function(team){return team.id}).join(', ') : '(no teams)';
+		// 	return;
+		// }
 
-		var workStartHHmm = $('#work-start-select').val().split(':');
-		var workStart = moment().tz($('#tz-select').val()).hours(workStartHHmm[0]).minutes(workStartHHmm[1]);
+		const tz = $('#tz-select').val()
+		var createdStr = incident.log_entries.trigger_log_entry[0].created_at;
+		var created = moment.tz(createdStr, tz);
+		var createdTime = moment().tz(tz).hours(created.hours()).minutes(created.minutes());
 
-		var workEndHHmm = $('#work-end-select').val().split(':');
-		var workEnd = moment().tz($('#tz-select').val()).hours(workEndHHmm[0]).minutes(workEndHHmm[1]);
+		var resolvedStr = incident.log_entries.resolve_log_entry[0].created_at;
+		var resolved = moment.tz(resolvedStr, tz);
 
-		if( workEnd.isBefore(workStart) ) {
-			workEnd.add(1, 'days');
+		var acknowledgedStr = "";
+		var acknowledged = null;
+		
+		if ( incident.acknowledge_log_entry ) {
+			acknowledgedStr = incident.log_entries.acknowledge_log_entry[0].created_at;
+			acknowledged = moment.tz(acknowledgedStr, tz);
 		}
 
-		var headline = `Incidents belonging to ${teamName} occurring between ${sinceStr} and ${untilStr}`;
-		$('#details').html('<h3>' + headline + '</h3>');
-		$('#details').append($('<table/>', {
-			id: "details-table",
-			class: "display"
-		}));
-		$('#details-table').append('<thead><tr></tr></thead><tbody></tbody><tfoot><tr><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr></tfoot>');
+		var resolvedBy = ( incident.log_entries.resolve_log_entry[0].agent.type == 'user_reference' ) ? incident.log_entries.resolve_log_entry[0].agent.summary : "auto-resolved";
 
-		var tableData = [];
-		var assignees = {};
-		Object.keys(incidents).forEach(function(incidentID) {
-			var incident = incidents[incidentID];
-			
-			if ( ! incident.log_entries.trigger_log_entry ) {
-				delete incidents[incidentID];
-				return;
-			}
-			if ( ! incident.log_entries.resolve_log_entry ) {
-				delete incidents[incidentID];
-				return;
-			}
-			if ( teamID != 'all' && ( ! incident.teams || incident.teams.map(function(team){return team.id}).indexOf(teamID) == -1 ) ) {
-				var team_names = incident.teams ? incident.teams.map(function(team){return team.id}).join(', ') : '(no teams)';
-				return;
-			}
+		var assignedTo = [];
 
-			var createdStr = incident.log_entries.trigger_log_entry[0].created_at;
-			var created = moment.tz(createdStr, $('#tz-select').val());
-			var createdTime = moment().tz($('#tz-select').val()).hours(created.hours()).minutes(created.minutes());
-
-			var resolvedStr = incident.log_entries.resolve_log_entry[0].created_at;
-			var resolved = moment.tz(resolvedStr, $('#tz-select').val());
-	
-			var acknowledgedStr = "";
-			var acknowledged = null;
-			
-			if ( incident.acknowledge_log_entry ) {
-				acknowledgedStr = incident.log_entries.acknowledge_log_entry[0].created_at;
-				acknowledged = moment.tz(acknowledgedStr, $('#tz-select').val());
-			}
-
-			var resolvedBy = ( incident.log_entries.resolve_log_entry[0].agent.type == 'user_reference' ) ? incident.log_entries.resolve_log_entry[0].agent.summary : "auto-resolved";
-
-			var assignedTo = [];
-
-			if ( incident.log_entries.assign_log_entry ) {
-				incident.log_entries.assign_log_entry.forEach(function(le) {
-					le.assignees.forEach(function(assignee) {
-						if ( assignee.type == 'user_reference' ) {
-							assignedTo.push(assignee.summary);
-						}
-					});
-				});
-				assignedTo = unique(assignedTo);
-				assignedTo.sort();
-				assignedTo.forEach(function (assignee) {
-					if ( ! assignees[assignee] ) {
-						assignees[assignee] = {
-							onHoursTime: 0,
-							offHoursTime: 0,
-							onHoursTTA: 0,
-							offHoursTTA: 0,
-							onHoursIncidents: 0,
-							offHoursIncidents: 0
-						}
+		if ( incident.log_entries.assign_log_entry ) {
+			for (const le of incident.log_entries.assign_log_entry) {
+				for (const assignee of le.assignees) {
+					if ( assignee.type == 'user_reference' ) {
+						assignedTo.push(assignee.summary);
 					}
-					if ( createdTime.isBetween(workStart, workEnd) ) {
-						assignees[assignee].onHoursTime += incident.ttr;
-						assignees[assignee].onHoursTTA += incident.tta;
-						assignees[assignee].onHoursIncidents++;
-					} else {
-						assignees[assignee].offHoursTime += incident.ttr;
-						assignees[assignee].offHoursTTA += incident.tta;
-						assignees[assignee].offHoursIncidents++;
+				}
+			}
+			assignedTo = unique(assignedTo);
+			assignedTo.sort();
+			for (assignee of assignedTo) {
+				if ( ! assignees[assignee] ) {
+					assignees[assignee] = {
+						onHoursTime: 0,
+						offHoursTime: 0,
+						onHoursTTA: 0,
+						offHoursTTA: 0,
+						onHoursIncidents: 0,
+						offHoursIncidents: 0
 					}
-				});
-			} else {
-				assignedTo = ['no one'];
+				}
+				if ( createdTime.isBetween(workStart, workEnd) ) {
+					assignees[assignee].onHoursTime += incident.ttr;
+					assignees[assignee].onHoursTTA += incident.tta;
+					assignees[assignee].onHoursIncidents++;
+				} else {
+					assignees[assignee].offHoursTime += incident.ttr;
+					assignees[assignee].offHoursTTA += incident.tta;
+					assignees[assignee].offHoursIncidents++;
+				}
 			}
+		} else {
+			assignedTo = ['no one'];
+		}
 
-			var serviceName = incident.log_entries.trigger_log_entry[0].service.summary;
-			var incidentSummary = incident.log_entries.trigger_log_entry[0].incident.summary;
-			var incidentNumber = incidentSummary.match(/\[#([\d]+)\]/)[1];
-			var incidentURL = incident.log_entries.trigger_log_entry[0].incident.html_url;
+		var serviceName = incident.service.summary;
+		var incidentSummary = incident.summary;
+		var incidentNumber = `${incident.incident_number}`
+		var incidentURL = incident.html_url;
 
-			tableData.push([
-				'<a href="' + incidentURL + '" target="blank">' + incidentNumber + '</a>',
-				incident.alert_counts.all,
-				created.format('l LTS [GMT]ZZ'),
-				createdTime.isBetween(workStart, workEnd) ? "no" : "yes",
-				assignedTo.join(', '),
-				resolved.format('l LTS [GMT]ZZ'),
-				resolvedBy,
-				incident.tta >= 0 ? moment.duration(incident.tta, 'seconds').humanize() : "not acknowledged",
-				incident.ttr >= 0 ? moment.duration(incident.ttr, 'seconds').humanize() : "not resolved",
-				serviceName,
-				incidentSummary
-			]);
-		});
+		tableData.push([
+			'<a href="' + incidentURL + '" target="blank">' + incidentNumber + '</a>',
+			incident.alert_counts.all,
+			created.format('l LTS [GMT]ZZ'),
+			createdTime.isBetween(workStart, workEnd) ? "no" : "yes",
+			assignedTo.join(', '),
+			resolved.format('l LTS [GMT]ZZ'),
+			resolvedBy,
+			incident.tta >= 0 ? moment.duration(incident.tta, 'seconds').humanize() : "not acknowledged",
+			incident.ttr >= 0 ? moment.duration(incident.ttr, 'seconds').humanize() : "not resolved",
+			serviceName,
+			incidentSummary
+		]);
+	}
 
-		// build details table
-		var columnTitles = [
-				{ title: "#" },
-				{ title: "# Alerts" },
-				{ title: "Created at" },
-				{ title: "Off-Hours" },
-				{ title: "Assigned to" },
-				{ title: "Resolved at" },
-				{ title: "Resolved by" },
-				{ title: "Time to Acknowledge" },
-				{ title: "Time to Resolve" },
-				{ title: "Service Name" },
-				{ title: "Summary" }
-			];
-		$('#details-table').DataTable({
-			data: tableData,
-			columns: columnTitles,
-			dom: 'Bfrtip',
-			buttons: [
-				'copy', 'csv', 'excel', 'pdf', 'print'
-			],
-			initComplete: function () {
-				this.api().columns([3,4,6,7,8,9]).every( function () {
-						var column = this;
-						var columnTitle = columnTitles[column.index()].title;
-						console.log(column, columnTitle)
-						var select = $('<select id="' + columnTitle + '"><option value="">' + columnTitle + ': (all)</option></select>')
-								.appendTo( $(column.footer()) )
-								.on( 'change', function () {
-										var val = $.fn.dataTable.util.escapeRegex(
-												$(this).val()
-										);
+	// build details table
+	var columnTitles = [
+			{ title: "#" },
+			{ title: "# Alerts" },
+			{ title: "Created at" },
+			{ title: "Off-Hours" },
+			{ title: "Assigned to" },
+			{ title: "Resolved at" },
+			{ title: "Resolved by" },
+			{ title: "Time to Acknowledge" },
+			{ title: "Time to Resolve" },
+			{ title: "Service Name" },
+			{ title: "Summary" }
+		];
+	$('#details-table').DataTable({
+		data: tableData,
+		columns: columnTitles,
+		dom: 'Bfrtip',
+		buttons: [
+			'copy', 'csv', 'excel', 'pdf', 'print'
+		],
+		initComplete: function () {
+			this.api().columns([3,4,6,7,8,9]).every( function () {
+					var column = this;
+					var columnTitle = columnTitles[column.index()].title;
+					var select = $('<select id="' + columnTitle + '"><option value="">' + columnTitle + ': (all)</option></select>')
+							.appendTo( $(column.footer()) )
+							.on( 'change', function () {
+									var val = $.fn.dataTable.util.escapeRegex(
+											$(this).val()
+									);
 
-										column
-												.search( val ? '^'+val+'$' : '', true, false )
-												.draw();
-								} );
+									column
+											.search( val ? '^'+val+'$' : '', true, false )
+											.draw();
+							} );
 
-						column.data().unique().sort().each( function ( d, j ) {
-								select.append( '<option value="'+d+'">'+d+'</option>' )
-						} );
-				} );
-			}
-		});
-
-		// build report table
-		$('#report').html('<h3>' + headline + '</h3>');
-		$('#report').append($('<table/>', {
-			id: "report-table",
-			class: "display"
-		}));
-		var reportTableData = [];
-
-		Object.keys(assignees).forEach(function(assignee) {
-			var onHoursMTTR = 'n/a';
-			if ( assignees[assignee].onHoursIncidents && assignees[assignee].onHoursTime ) {
-				onHoursMTTR = moment.duration(assignees[assignee].onHoursTime / assignees[assignee].onHoursIncidents, 'seconds').humanize()
-			}
-
-			var offHoursMTTR = 'n/a';
-			if ( assignees[assignee].offHoursIncidents && assignees[assignee].offHoursTime ) {
-				offHoursMTTR = moment.duration(assignees[assignee].offHoursTime / assignees[assignee].offHoursIncidents, 'seconds').humanize()
-			}
-
-
-			var onHoursMTTA = 'n/a';
-			if ( assignees[assignee].onHoursIncidents && assignees[assignee].onHoursTTA ) {
-				onHoursMTTA = moment.duration(assignees[assignee].onHoursTTA / assignees[assignee].onHoursIncidents, 'seconds').humanize()
-			}
-
-			var offHoursMTTA = 'n/a';
-			if ( assignees[assignee].offHoursIncidents && assignees[assignee].offHoursTTA ) {
-				offHoursMTTA = moment.duration(assignees[assignee].offHoursTTA / assignees[assignee].offHoursIncidents, 'seconds').humanize()
-			}
-
-
-			reportTableData.push([
-				assignee,
-				secondsToHHMMSS(assignees[assignee].onHoursTime),
-				assignees[assignee].onHoursIncidents,
-				onHoursMTTR,
-				onHoursMTTA,
-				secondsToHHMMSS(assignees[assignee].offHoursTime),
-				assignees[assignee].offHoursIncidents,
-				offHoursMTTR,
-				offHoursMTTA
-			]);
-		});
-		var reportColumnTitles = [
-				{ title: "User" },
-				{ title: "On-Hours Time (HH:MM:SS)" },
-				{ title: "On-Hours Incidents" },
-				{ title: "On-Hours MTTR" },
-				{ title: "On-Hours MTTA" },
-				{ title: "Off-Hours Time (HH:MM:SS)" },
-				{ title: "Off-Hours Incidents" },
-				{ title: "Off-Hours MTTR" },
-				{ title: "Off-Hours MTTA" }
-			];
-		$('#report-table').DataTable({
-			data: reportTableData,
-			columns: reportColumnTitles,
-			dom: 'Bfrtip',
-			buttons: [
-				'copy', 'csv', 'excel', 'pdf', 'print'
-			]
-		});
-
-		$('.busy').hide();
+					column.data().unique().sort().each( function ( d, j ) {
+							select.append( '<option value="'+d+'">'+d+'</option>' )
+					} );
+			} );
+		}
 	});
+
+	// build report table
+	$('#report').html('<h3>' + headline + '</h3>');
+	$('#report').append($('<table/>', {
+		id: "report-table",
+		class: "display"
+	}));
+	var reportTableData = [];
+
+	for (const [assignee_name, assignee] of Object.entries(assignees)) {
+		var onHoursMTTR = 'n/a';
+		if ( assignee.onHoursIncidents && assignee.onHoursTime ) {
+			onHoursMTTR = moment.duration(assignee.onHoursTime / assignee.onHoursIncidents, 'seconds').humanize()
+		}
+
+		var offHoursMTTR = 'n/a';
+		if ( assignee.offHoursIncidents && assignee.offHoursTime ) {
+			offHoursMTTR = moment.duration(assignee.offHoursTime / assignee.offHoursIncidents, 'seconds').humanize()
+		}
+
+
+		var onHoursMTTA = 'n/a';
+		if ( assignee.onHoursIncidents && assignee.onHoursTTA ) {
+			onHoursMTTA = moment.duration(assignee.onHoursTTA / assignee.onHoursIncidents, 'seconds').humanize()
+		}
+
+		var offHoursMTTA = 'n/a';
+		if ( assignee.offHoursIncidents && assignee.offHoursTTA ) {
+			offHoursMTTA = moment.duration(assignee.offHoursTTA / assignee.offHoursIncidents, 'seconds').humanize()
+		}
+
+
+		reportTableData.push([
+			assignee_name,
+			secondsToHHMMSS(assignee.onHoursTime),
+			assignee.onHoursIncidents,
+			onHoursMTTR,
+			onHoursMTTA,
+			secondsToHHMMSS(assignee.offHoursTime),
+			assignee.offHoursIncidents,
+			offHoursMTTR,
+			offHoursMTTA
+		]);
+	}
+	var reportColumnTitles = [
+			{ title: "User" },
+			{ title: "On-Hours Time (HH:MM:SS)" },
+			{ title: "On-Hours Incidents" },
+			{ title: "On-Hours MTTR" },
+			{ title: "On-Hours MTTA" },
+			{ title: "Off-Hours Time (HH:MM:SS)" },
+			{ title: "Off-Hours Incidents" },
+			{ title: "Off-Hours MTTR" },
+			{ title: "Off-Hours MTTA" }
+		];
+	$('#report-table').DataTable({
+		data: reportTableData,
+		columns: reportColumnTitles,
+		dom: 'Bfrtip',
+		buttons: [
+			'copy', 'csv', 'excel', 'pdf', 'print'
+		]
+	});
+
+	$('.busy').hide();
+
 }
 
-function main() {
+async function main() {
 	$('#since').datepicker();
 	$('#until').datepicker();
 
@@ -536,28 +490,19 @@ function main() {
 
 	$('#tz-select').val(localStorage.getItem('timezone'));
 
-	async.series([
-		function(callback) {
-			fetchTeams(function(teams) {
-				$('#team-select').html('');
-				$('#team-select').append($('<option/>', {
-					value: 'all',
-					text: 'All Teams'
-				}));
-
-				teams.forEach(function(team) {
-					$('#team-select').append($('<option/>', {
-						value: team.id,
-						text: team.summary
-					}));
-				});
-				callback(null, 'yay');
-			});
-		}
-	],
-	function(err, results) {
-		buildReport(since, until);
-	});
+	const teams = await PDFetch(getParameterByName('token'), 'teams')
+	$('#team-select').html('');
+	$('#team-select').append($('<option/>', {
+		value: 'all',
+		text: 'All Teams'
+	}));
+	for (team of teams) {
+		$('#team-select').append($('<option/>', {
+			value: team.id,
+			text: team.summary
+		}));
+	}
+	buildReport(since, until)
 
 	$('#since').change(function() {
 		since = $('#since').datepicker("getDate");
@@ -605,4 +550,6 @@ function main() {
 	$('#report').html("<h3>oh hai</h3>");
 }
 
-$(document).ready(main);
+(() => {
+	main()
+})()

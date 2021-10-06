@@ -12,6 +12,15 @@ body {
 	z-index: 10;
 }
 
+.busy .message {
+	opacity: 1.0;
+	color: white;
+	top: auto; right: 0; bottom: 90px; left: 0;
+	position: fixed;
+	margin: auto;
+	text-align: center;
+}
+
 .busy .spinner {
 	width: 100px;
 	height: 100px;
