@@ -64,11 +64,15 @@ async function PDFetch(token, endpoint, params, progressCallback) {
 
 	let promises = []
 	let outerOffset = 0
-	while (outerOffset + requestParams.offset < firstPage.total) {
-		while ((outerOffset + requestParams.offset < firstPage.total) && (requestParams.offset < 10000)) {
+	let more = true
+	while (more && outerOffset + requestParams.offset < firstPage.total) {
+		while (more && (outerOffset + requestParams.offset < firstPage.total) && (requestParams.offset < 10000)) {
 			const promise = PDRequest(token, endpoint, 'GET', requestParams)
 				.then(page => {
 					fetchedData = [...fetchedData, ...page[endpointIdentifier(endpoint)]]
+					if (page.more === false) {
+						more = false
+					}
 					if (progressCallback) {
 						progressCallback(firstPage.total, fetchedData.length)
 					}
